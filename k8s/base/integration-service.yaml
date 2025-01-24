@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: integration-service
+  labels:
+    app: integration-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: integration-service
+  template:
+    metadata:
+      labels:
+        app: integration-service
+    spec:
+      containers:
+      - name: integration-service
+        image: ${DOCKER_REGISTRY}/integration-service:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: REDIS_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: integration-service-config
+              key: redis_host
+        - name: RABBITMQ_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: integration-service-config
+              key: rabbitmq_host
+        - name: RABBITMQ_USER
+          valueFrom:
+            secretKeyRef:
+              name: integration-service-secrets
+              key: rabbitmq_user
+        - name: RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: integration-service-secrets
+              key: rabbitmq_password
+        - name: ONEC_API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: integration-service-config
+              key: onec_api_url
+        - name: ONEC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: integration-service-secrets
+              key: onec_api_key
+        resources:
+          limits:
+            cpu: "500m"
+            memory: "512Mi"
+          requests:
+            cpu: "200m"
+            memory: "256Mi"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: integration-service
+spec:
+  selector:
+    app: integration-service
+  ports:
+  - port: 80
+    targetPort: 8080
+  type: ClusterIP
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: integration-service-config
+data:
+  redis_host: "redis"
+  rabbitmq_host: "rabbitmq"
+  onec_api_url: "http://1c-server/api/v1"
+  sync_interval: "300"  # 5 minutes in seconds
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: integration-service-secrets
+type: Opaque
+data:
+  rabbitmq_user: aW50ZWdyYXRpb24=  # integration
+  rabbitmq_password: Y2hhbmdlbWU=  # changeme
+  onec_api_key: Y2hhbmdlbWU=  # changeme
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: integration-service
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: integration-service
+  minReplicas: 2
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: integration-sync
+spec:
+  schedule: "*/5 * * * *"  # Every 5 minutes
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: sync-job
+            image: ${DOCKER_REGISTRY}/integration-service:latest
+            args: ["sync"]
+            env:
+            - name: ONEC_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: integration-service-config
+                  key: onec_api_url
+            - name: ONEC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: integration-service-secrets
+                  key: onec_api_key
+          restartPolicy: OnFailure 
